@@ -10,10 +10,9 @@ import time
 st.set_page_config(page_title="Stock Analysis Toolkit", layout="wide")
 st.title("Stock Analysis Toolkit")
 
-tab1, tab2, tab3 = st.tabs(["Historical Backtest", "Current Analysis", "Simulation Results"])
+tab2, tab1, tab3 = st.tabs(["Current Analysis", "Historical Backtest", "Simulation Results"])
 
 def calculate_performance_metrics(dates, values, risk_free_rate=0.0):
-    """Calculate comprehensive performance metrics"""
     if len(values) <= 1:
         return {}
 
@@ -28,51 +27,26 @@ def calculate_performance_metrics(dates, values, risk_free_rate=0.0):
     years = (dates[-1] - dates[0]).days / 365.25
     cagr = (values[-1] / values[0]) ** (1 / years) - 1 if years > 0 else total_return
 
-    std_dev = float(returns.std() * np.sqrt(252))
-
-    cumulative = pd.Series(values)
-    rolling_max = cumulative.expanding().max()
-    drawdowns = (cumulative - rolling_max) / rolling_max
-    max_drawdown = float(drawdowns.min())
-
-    excess_returns = returns - risk_free_rate / 252
-    sharpe = float(excess_returns.mean() / returns.std() * np.sqrt(252)) if returns.std() > 0 else 0.0
-
-    downside_returns = returns[returns < 0]
-    downside_std = downside_returns.std() * np.sqrt(252) if len(downside_returns) > 0 else 0
-    sortino = float((returns.mean() * 252 - risk_free_rate) / downside_std) if downside_std > 0 else 0.0
-
-    yearly_returns = []
-    current_year = dates[0].year
-    year_values = [values[0]]
-
-    for i in range(1, len(dates)):
-        if dates[i].year != current_year:
-            if len(year_values) > 1:
-                year_return = (year_values[-1] - year_values[0]) / year_values[0]
-                yearly_returns.append(float(year_return))
-            current_year = dates[i].year
-            year_values = [values[i]]
-        else:
-            year_values.append(values[i])
-
-    if len(year_values) > 1:
-        year_return = (year_values[-1] - year_values[0]) / year_values[0]
-        yearly_returns.append(float(year_return))
-
-    best_year = max(yearly_returns) if yearly_returns else 0.0
-    worst_year = min(yearly_returns) if yearly_returns else 0.0
-
     return {
         'total_return': float(total_return),
         'cagr': float(cagr),
-        'std_dev': float(std_dev),
-        'max_drawdown': float(max_drawdown),
-        'sharpe': float(sharpe),
-        'sortino': float(sortino),
-        'best_year': float(best_year),
-        'worst_year': float(worst_year)
     }
+
+def calculate_drawdowns(values):
+    """Calculate drawdown series from portfolio values"""
+    if not values or len(values) == 0:
+        return []
+
+    peak = values[0]
+    drawdowns = []
+
+    for value in values:
+        if value > peak:
+            peak = value
+        drawdown = (value - peak) / peak
+        drawdowns.append(drawdown)
+
+    return drawdowns
 
 def safe_format(value, format_str=".2f", suffix="%"):
     """Safely format values that might be Series or NaN"""
@@ -209,8 +183,6 @@ def run_backtest_simulation(stock_data_full, irx_data_full, start_date, end_date
         'final_value': final_portfolio,
         'total_return': (final_portfolio - initial_investment) / initial_investment,
         'cagr': sma_metrics.get('cagr', 0),
-        'sharpe': sma_metrics.get('sharpe', 0),
-        'max_drawdown': sma_metrics.get('max_drawdown', 0)
     }
 
 if 'simulation_results' not in st.session_state:
@@ -218,7 +190,7 @@ if 'simulation_results' not in st.session_state:
 
 with tab1:
 
-    st.header("SMA Strategy vs Buy & Hold Backtest")
+    st.header("SMA vs Buy & Hold Backtest")
 
     with st.sidebar:
         ticker = st.text_input("Stock Ticker", "VTI", key="hist_ticker").upper()
@@ -361,7 +333,7 @@ with tab1:
 
         with col1:
             st.metric(
-                label="SMA Strategy Value",
+                label="SMA Value",
                 value=f"${final_portfolio:,.0f}",
                 delta=f"{sma_return:+.1f}%"
             )
@@ -409,7 +381,7 @@ with tab1:
                     monthly_portfolio_values.append(portfolio_values[i])
                     monthly_bh_values.append(bh_values[i])
 
-        fig.add_trace(go.Scatter(x=monthly_dates, y=monthly_portfolio_values, name="SMA Strategy", line=dict(width=2.5)))
+        fig.add_trace(go.Scatter(x=monthly_dates, y=monthly_portfolio_values, name="SMA", line=dict(width=2.5)))
         fig.add_trace(go.Scatter(x=monthly_dates, y=monthly_bh_values, name="Buy & Hold", line=dict(width=2.5)))
 
         fig.update_layout(
@@ -422,6 +394,172 @@ with tab1:
             height=500,
         )
         st.plotly_chart(fig, use_container_width=True)
+
+        st.subheader("Annual Returns")
+
+        annual_data = {}
+        current_year = None
+        year_start_portfolio = None
+        year_start_bh = None
+
+        for i in range(len(dates)):
+            date = dates[i]
+            year = date.year
+
+            if year != current_year:
+                if current_year is not None and year_start_portfolio is not None:
+                    year_end_portfolio = portfolio_values[i-1] if i > 0 else portfolio_values[i]
+                    year_end_bh = bh_values[i-1] if i > 0 else bh_values[i]
+
+                    portfolio_return = (year_end_portfolio - year_start_portfolio) / year_start_portfolio * 100
+                    bh_return = (year_end_bh - year_start_bh) / year_start_bh * 100
+
+                    annual_data[current_year] = {
+                        'portfolio_return': portfolio_return,
+                        'bh_return': bh_return
+                    }
+
+                current_year = year
+                year_start_portfolio = portfolio_values[i]
+                year_start_bh = bh_values[i]
+
+        if current_year is not None and year_start_portfolio is not None:
+            year_end_portfolio = portfolio_values[-1]
+            year_end_bh = bh_values[-1]
+
+            portfolio_return = (year_end_portfolio - year_start_portfolio) / year_start_portfolio * 100
+            bh_return = (year_end_bh - year_start_bh) / year_start_bh * 100
+
+            annual_data[current_year] = {
+                'portfolio_return': portfolio_return,
+                'bh_return': bh_return
+            }
+
+        if annual_data:
+            years = list(annual_data.keys())
+            portfolio_returns = [annual_data[year]['portfolio_return'] for year in years]
+            if portfolio_returns[0] == 0:
+                portfolio_returns = portfolio_returns[1:]
+                years = years[1:]
+            bh_returns = [annual_data[year]['bh_return'] for year in years]
+
+            fig_annual = go.Figure()
+
+            fig_annual.add_trace(go.Bar(
+                x=years,
+                y=portfolio_returns,
+                name="SMA",
+                marker_color='#00D4AA'
+            ))
+
+            fig_annual.add_trace(go.Bar(
+                x=years,
+                y=bh_returns,
+                name="Buy & Hold",
+                marker_color='#FF6B6B'
+            ))
+
+            fig_annual.update_layout(
+                xaxis_title="Year",
+                yaxis_title="Annual Return (%)",
+                template="plotly_dark",
+                hovermode="x unified",
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                margin=dict(l=40, r=20, t=60, b=40),
+                height=500,
+                bargap=0.15,
+                bargroupgap=0.1
+            )
+
+            fig_annual.update_traces(
+                texttemplate='%{y:.1f}%',
+                textposition='outside'
+            )
+
+            st.plotly_chart(fig_annual, use_container_width=True)
+
+        else:
+            st.info("Insufficient data to calculate annual returns.")
+
+        st.subheader("Monthly Drawdowns")
+
+        sma_drawdowns = calculate_drawdowns(portfolio_values)
+        bh_drawdowns = calculate_drawdowns(bh_values)
+
+        monthly_drawdown_dates = []
+        monthly_sma_drawdowns = []
+        monthly_bh_drawdowns = []
+
+        current_month = None
+        month_sma_dd = []
+        month_bh_dd = []
+        month_dates = []
+
+        for i in range(len(dates)):
+            date_i = dates[i]
+            month_year = (date_i.year, date_i.month)
+
+            if month_year != current_month:
+                if current_month is not None:
+
+                    monthly_drawdown_dates.append(month_dates[-1])
+                    monthly_sma_drawdowns.append(month_sma_dd[-1])
+                    monthly_bh_drawdowns.append(month_bh_dd[-1])
+
+                current_month = month_year
+                month_sma_dd = []
+                month_bh_dd = []
+                month_dates = []
+
+            month_sma_dd.append(sma_drawdowns[i])
+            month_bh_dd.append(bh_drawdowns[i])
+            month_dates.append(date_i)
+
+        if month_dates:
+            monthly_drawdown_dates.append(month_dates[-1])
+            monthly_sma_drawdowns.append(month_sma_dd[-1])
+            monthly_bh_drawdowns.append(month_bh_dd[-1])
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            max_sma_dd = min(monthly_sma_drawdowns) * 100 if monthly_sma_drawdowns else 0
+            st.metric("Max SMA Drawdown", f"{max_sma_dd:.1f}%")
+
+        with col2:
+            max_bh_dd = min(monthly_bh_drawdowns) * 100 if monthly_bh_drawdowns else 0
+            st.metric("Max Buy & Hold Drawdown", f"{max_bh_dd:.1f}%")
+
+        fig_drawdown = go.Figure()
+
+        fig_drawdown.add_trace(go.Scatter(
+            x=monthly_drawdown_dates, 
+            y=[dd * 100 for dd in monthly_sma_drawdowns],
+            name="SMA",
+            line=dict(width=2.5, color='#00D4AA'),
+            fill='tozeroy'
+        ))
+
+        fig_drawdown.add_trace(go.Scatter(
+            x=monthly_drawdown_dates, 
+            y=[dd * 100 for dd in monthly_bh_drawdowns],
+            name="Buy & Hold",
+            line=dict(width=2.5, color='#FF6B6B'),
+            fill='tozeroy'
+        ))
+
+        fig_drawdown.update_layout(
+            xaxis_title="Date",
+            yaxis_title="Drawdown (%)",
+            template="plotly_dark",
+            hovermode="x unified",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            margin=dict(l=40, r=20, t=60, b=40),
+            height=500,
+            yaxis=dict(ticksuffix="%")
+        )
+
+        st.plotly_chart(fig_drawdown, use_container_width=True)
 
 with tab3:
     st.header("Parameter Simulation Results")
@@ -477,42 +615,20 @@ with tab3:
         if results:
             results_df = pd.DataFrame(results)
 
-            best_by_return = results_df.loc[results_df['total_return'].idxmax()]
             best_by_cagr = results_df.loc[results_df['cagr'].idxmax()]
-            best_by_sharpe = results_df.loc[results_df['sharpe'].idxmax()]
-            best_by_drawdown = results_df.loc[results_df['max_drawdown'].idxmin()]
 
-            col1, col2, col3 = st.columns(3)
-
-            with col1:
-                st.metric(
-                    "Best Total Return",
-                    f"SMA {int(best_by_return['sma_months'])}M\n{best_by_return['timing']}",
-                    f"{best_by_return['total_return']*100:.1f}%"
-                )
-
-            with col2:
-                st.metric(
+            st.metric(
                     "Best CAGR",
                     f"SMA {int(best_by_cagr['sma_months'])}M\n{best_by_cagr['timing']}",
                     f"{best_by_cagr['cagr']*100:.1f}%"
                 )
 
-            with col3:
-                st.metric(
-                    "Best Sharpe Ratio",
-                    f"SMA {int(best_by_sharpe['sma_months'])}M\n{best_by_sharpe['timing']}",
-                    f"{best_by_sharpe['sharpe']:.2f}"
-                )
-
-            top_results = results_df.nlargest(10, 'total_return')[['sma_months', 'timing', 'final_value', 'total_return', 'cagr', 'sharpe', 'max_drawdown']]
+            top_results = results_df.nlargest(10, 'total_return')[['sma_months', 'timing', 'final_value', 'total_return', 'cagr']]
             top_results['total_return'] = (top_results['total_return'] * 100).round(1)
             top_results['cagr'] = (top_results['cagr'] * 100).round(1)
-            top_results['max_drawdown'] = (top_results['max_drawdown'] * 100).round(1)
-            top_results['sharpe'] = top_results['sharpe'].round(2)
             top_results['final_value'] = top_results['final_value'].round(0)
 
-            top_results.columns = ['SMA Months', 'Rebalance Freq', 'Final Value', 'Total Return %', 'CAGR %', 'Sharpe Ratio', 'Max Drawdown %']
+            top_results.columns = ['SMA Months', 'Rebalance Freq', 'Final Value', 'Total Return %', 'CAGR %']
             st.dataframe(top_results, use_container_width=True)
 
 with tab2:
