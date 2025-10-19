@@ -221,13 +221,13 @@ with tab1:
     st.header("SMA Strategy vs Buy & Hold Backtest")
 
     with st.sidebar:
-        ticker = st.text_input("Stock Ticker", "AAPL", key="hist_ticker").upper()
+        ticker = st.text_input("Stock Ticker", "VTI", key="hist_ticker").upper()
         col1, col2 = st.columns(2)
         with col1:
             start_date = st.date_input("Start Date", date(2015, 12, 31), key="hist_start")
         with col2:
             end_date = st.date_input("End Date", date.today(), key="hist_end")
-        sma_months = st.number_input("Analysis Period (months)", min_value=1, max_value=240, value=6, step=1, key="hist_months")
+        sma_months = st.number_input("Analysis Period (months)", min_value=1, max_value=240, value=11, step=1, key="hist_months")
         timing = st.selectbox("Rebalance Frequency", ["At Signal", "Weekly", "Biweekly", "Monthly", "Bimonthly", "Quarterly"], key="hist_timing")
         initial_investment = st.number_input("Initial Capital ($)", min_value=1000, max_value=1000000, value=10000, step=1000, key="hist_investment")
 
