@@ -1,7 +1,5 @@
 yfinance
 pandas
 numpy
-datetime
-dateutil
 plotly
-time
+python-dateutil
