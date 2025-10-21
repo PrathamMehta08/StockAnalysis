@@ -568,8 +568,8 @@ with tab1:
                     monthly_portfolio_values.append(portfolio_values[i])
                     monthly_bh_values.append(bh_values[i])
 
-        fig.add_trace(go.Scatter(x=monthly_dates, y=monthly_portfolio_values, name="SMA", line=dict(width=2.5)))
-        fig.add_trace(go.Scatter(x=monthly_dates, y=monthly_bh_values, name="Buy & Hold", line=dict(width=2.5)))
+        fig.add_trace(go.Scatter(x=monthly_dates, y=monthly_portfolio_values, name="SMA", line=dict(width=1.5, color='#4169C0')))
+        fig.add_trace(go.Scatter(x=monthly_dates, y=monthly_bh_values, name="Buy & Hold", line=dict(width=1.5, color='#FFEE8C')))
 
         # Add trade markers to the chart
         if trades:
@@ -582,7 +582,7 @@ with tab1:
                     y=[t['portfolio_value'] for t in buy_trades],
                     mode='markers',
                     name='Buy Trade',
-                    marker=dict(color='#2ecc71', size=8, symbol='triangle-up', line=dict(width=1, color='DarkSlateGrey'))
+                    marker=dict(color='#2ecc71', size=16, symbol='triangle-up', line=dict(width=0.5, color='DarkSlateGrey'))
                 ))
             
             if sell_trades:
@@ -591,7 +591,7 @@ with tab1:
                     y=[t['portfolio_value'] for t in sell_trades],
                     mode='markers',
                     name='Sell Trade',
-                    marker=dict(color='#e74c3c', size=8, symbol='triangle-down', line=dict(width=1, color='DarkSlateGrey'))
+                    marker=dict(color='#e74c3c', size=16, symbol='triangle-down', line=dict(width=0.5, color='DarkSlateGrey'))
                 ))
 
         fig.update_layout(
@@ -659,14 +659,14 @@ with tab1:
                 x=years,
                 y=portfolio_returns,
                 name="SMA",
-                marker_color='#00D4AA'
+                marker_color='#4169C0'
             ))
 
             fig_annual.add_trace(go.Bar(
                 x=years,
                 y=bh_returns,
                 name="Buy & Hold",
-                marker_color='#FF6B6B'
+                marker_color='#FFEE8C'
             ))
 
             fig_annual.update_layout(
@@ -724,20 +724,20 @@ with tab1:
             st.metric("Max Buy & Hold Drawdown", f"{max_bh_dd:.1f}%")
 
         fig_drawdown = go.Figure()
-
+        
         fig_drawdown.add_trace(go.Scatter(
             x=monthly_drawdown_dates, 
-            y=[dd * 100 for dd in monthly_sma_drawdowns],
-            name="SMA",
-            line=dict(width=2.5, color='#00D4AA'),
+            y=[dd * 100 for dd in monthly_bh_drawdowns],
+            name="Buy & Hold",
+            line=dict(width=2.5, color="#FFEE8C"),
             fill='tozeroy'
         ))
 
         fig_drawdown.add_trace(go.Scatter(
             x=monthly_drawdown_dates, 
-            y=[dd * 100 for dd in monthly_bh_drawdowns],
-            name="Buy & Hold",
-            line=dict(width=2.5, color='#FF6B6B'),
+            y=[dd * 100 for dd in monthly_sma_drawdowns],
+            name="SMA",
+            line=dict(width=2.5, color="#4169C0"),
             fill='tozeroy'
         ))
 
@@ -825,24 +825,6 @@ with tab2:
         buy_signals = df[df["Signal"].diff() == 1]
         sell_signals = df[df["Signal"].diff() == -1]
 
-        if not buy_signals.empty:
-            fig.add_trace(go.Scatter(
-                x=buy_signals.index,
-                y=buy_signals[price_column],
-                mode='markers',
-                name='Buy Signal',
-                marker=dict(color='#2ecc71', size=8, symbol='triangle-up', line=dict(width=1, color='DarkSlateGrey'))
-            ))
-
-        if not sell_signals.empty:
-            fig.add_trace(go.Scatter(
-                x=sell_signals.index,
-                y=sell_signals[price_column],
-                mode='markers',
-                name='Sell Signal',
-                marker=dict(color='#e74c3c', size=8, symbol='triangle-down', line=dict(width=1, color='DarkSlateGrey'))
-            ))
-
         fig.update_layout(
             template="plotly_dark",
             hovermode="x unified",
@@ -881,8 +863,8 @@ with tab3:
     if simulate_button:
         # Use the same data from tab1
         if 'stock_data_full' in locals() and 'irx_data_full' in locals():
-            sma_months_range = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 15, 18, 21, 24, 27, 30, 33, 36]
-            rebalance_freqs = ["At Signal", "Weekly", "Biweekly", "Monthly", "Bimonthly", "Quarterly"]
+            sma_months_range = [7, 8, 9, 10, 11, 12, 15, 18]
+            rebalance_freqs = ["Monthly", "Bimonthly", "Quarterly"]
 
             results = []
             total_combinations = len(sma_months_range) * len(rebalance_freqs)
