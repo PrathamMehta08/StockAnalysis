@@ -1,6 +1,6 @@
-yfinance
-pandas
-numpy
-plotly
-python-dateutil
-empyrical
+yfinance==0.2.66
+pandas==2.2.1
+numpy==1.26.3
+plotly==6.3.1
+python-dateutil==2.8.2
+empyrical==0.5.5
