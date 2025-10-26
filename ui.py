@@ -5,14 +5,14 @@ import numpy as np
 from datetime import datetime, date
 from dateutil.relativedelta import relativedelta
 import plotly.graph_objects as go
-import time
+import empyrical as ep
 
 st.set_page_config(page_title="Stock Analysis Toolkit", layout="wide")
 st.title("Stock Analysis Toolkit")
 
 tab2, tab1, tab3 = st.tabs(["Current Analysis", "Historical Backtest", "Simulation Results"])
 
-def calculate_performance_metrics(dates, values, irx_data=None, risk_free_rate=0.0):
+def calculate_performance_metrics(dates, values, irx_data=None, risk_free_rate=0.02):
     if len(values) <= 1:
         return {}
 
@@ -20,8 +20,11 @@ def calculate_performance_metrics(dates, values, irx_data=None, risk_free_rate=0
     df.set_index("date", inplace=True)
     df = df.sort_index()
 
-    monthly_values = df["value"].resample('M').last()
+    monthly_values = df["value"].resample('ME').last()  
     monthly_returns = monthly_values.pct_change().dropna()
+
+    if monthly_returns.empty:
+        return {}
 
     total_return = (values[-1] - values[0]) / values[0]
     years = (df.index[-1] - df.index[0]).days / 365.25
@@ -29,45 +32,75 @@ def calculate_performance_metrics(dates, values, irx_data=None, risk_free_rate=0
 
     excess_returns = []
     monthly_rf_rates = []
-    
+
     for date_i, ret_i in zip(monthly_returns.index, monthly_returns.values):
-        if irx_data is not None:
+        rf_annual = risk_free_rate  
+
+        if irx_data is not None and not irx_data.empty:
             try:
-                # Find the closest available IRX data for this month
+
                 irx_value = irx_data.loc[irx_data.index <= date_i].iloc[-1]
+
                 if isinstance(irx_value, pd.Series):
                     irx_close = irx_value["Close"]
+                    if isinstance(irx_close, pd.Series):
+                        irx_close = irx_close.iloc[0]
                 else:
-                    irx_close = irx_value
-                
-                rf_annual = float(irx_close)/100 if irx_close > 0 else risk_free_rate
-            except (KeyError, IndexError, ValueError):
-                rf_annual = risk_free_rate
-        else:
-            rf_annual = risk_free_rate
+                    irx_close = float(irx_value)
 
-        rf_monthly = (1 + rf_annual) ** (1/12) - 1
+                if irx_close > 0:
+                    rf_annual = float(irx_close) / 100
+            except (KeyError, IndexError, ValueError):
+                pass
+
+        rf_monthly = (1 + rf_annual) ** (1 / 12) - 1
         monthly_rf_rates.append(rf_monthly)
         excess_returns.append(ret_i - rf_monthly)
 
-    excess_mean = np.mean(excess_returns)
-    excess_std = np.std(excess_returns)
-    sharpe_ratio = np.sqrt(12) * excess_mean / excess_std if excess_std != 0 else 0
+    excess_returns = np.array(excess_returns)
 
-    # FIXED: Proper Sortino ratio calculation using only negative returns
-    downside_returns = [r for r in excess_returns if r < 0]
-    downside_std = np.std(downside_returns) if downside_returns else 0
-    sortino_ratio = np.sqrt(12) * excess_mean / downside_std if downside_std != 0 else 0
+    try:
+        sharpe_ratio = ep.sharpe_ratio(excess_returns, risk_free=0.0, period='monthly')
+        sortino_ratio = ep.sortino_ratio(excess_returns, required_return=0.0, period='monthly')
+
+        sharpe_ratio = float(sharpe_ratio) if not pd.isna(sharpe_ratio) else 0.0
+        sortino_ratio = float(sortino_ratio) if not pd.isna(sortino_ratio) else 0.0
+    except (ValueError, ZeroDivisionError, IndexError) as e:
+        print("Empyrical calculation failed:", e)
+        sharpe_ratio = 0.0
+        sortino_ratio = 0.0
 
     return {
         'total_return': float(total_return),
         'cagr': float(cagr),
-        'sharpe': float(sharpe_ratio),
-        'sortino': float(sortino_ratio)
+        'sharpe': sharpe_ratio,
+        'sortino': sortino_ratio
     }
 
+def calculate_exact_month_sma(price_data, months_lookback, return_lookback_data=False):
+    sma_values = []
+    dates = price_data.index
+
+    for current_date in dates:
+        target_date = current_date - relativedelta(months=months_lookback)
+
+        start_idx = price_data.index.searchsorted(target_date)
+        end_idx = price_data.index.get_loc(current_date)
+
+        if start_idx <= end_idx:
+            lookback_data = price_data.iloc[start_idx:end_idx + 1]
+            sma = lookback_data.mean()
+        else:
+            sma = price_data.loc[current_date]
+
+        sma_values.append(sma)
+
+    if return_lookback_data:
+        return pd.Series(sma_values, index=dates), lookback_data
+
+    return pd.Series(sma_values, index=dates)
+
 def calculate_drawdowns(values):
-    """Calculate drawdown series from portfolio values"""
     if not values or len(values) == 0:
         return []
 
@@ -83,7 +116,6 @@ def calculate_drawdowns(values):
     return drawdowns
 
 def safe_format(value, format_str=".2f", suffix="%"):
-    """Safely format values that might be Series or NaN"""
     if value is None or pd.isna(value):
         return "N/A"
 
@@ -100,28 +132,25 @@ def safe_format(value, format_str=".2f", suffix="%"):
 
 def run_backtest_simulation(stock_data_full, irx_data_full, start_date, end_date, 
                            sma_months, timing, initial_investment):
-    """Run a single backtest simulation with given parameters"""
 
     stock_data_full = stock_data_full.copy()
     stock_data_full.index = pd.to_datetime(stock_data_full.index)
     irx_data_full.index = pd.to_datetime(irx_data_full.index)
 
-    # Use the same SMA calculation as Current Analysis
-    sma_days = sma_months * 21
-    stock_data_full[f"SMA {sma_days}"] = stock_data_full["Close"].rolling(
-        window=sma_days, min_periods=1
-    ).mean()
+    stock_data_full[f"SMA {sma_months}M"] = calculate_exact_month_sma(
+        stock_data_full["Close"], sma_months
+    )
 
     stock_data = stock_data_full.loc[stock_data_full.index >= pd.to_datetime(start_date)].copy()
     irx_data = irx_data_full.reindex(stock_data.index, method="ffill")
 
-    if stock_data[f"SMA {sma_days}"].isna().any():
-        first_valid_sma = stock_data[f"SMA {sma_days}"].first_valid_index()
+    if stock_data[f"SMA {sma_months}M"].isna().any():
+        first_valid_sma = stock_data[f"SMA {sma_months}M"].first_valid_index()
         if first_valid_sma is not None:
-            first_valid_value = stock_data.loc[first_valid_sma, f"SMA {sma_days}"]
-            stock_data[f"SMA {sma_days}"].fillna(first_valid_value, inplace=True)
+            first_valid_value = stock_data.loc[first_valid_sma, f"SMA {sma_months}M"]
+            stock_data[f"SMA {sma_months}M"].fillna(first_valid_value, inplace=True)
         else:
-            stock_data[f"SMA {sma_days}"] = stock_data["Close"]
+            stock_data[f"SMA {sma_months}M"] = stock_data["Close"]
 
     initial_cash = initial_investment
     cash = initial_cash
@@ -132,15 +161,12 @@ def run_backtest_simulation(stock_data_full, irx_data_full, start_date, end_date
     dates = stock_data.index
     buy_and_hold_shares = initial_cash / stock_data["Close"].iloc[0]
 
-    avg_irx = float(irx_data["Close"].mean() / 100) if not irx_data.empty else 0.0
-
     for i in range(len(stock_data)):
         date_i = dates[i]
         price = float(stock_data["Close"].iloc[i])
-        sma = float(stock_data[f"SMA {sma_days}"].iloc[i])
+        sma = float(stock_data[f"SMA {sma_months}M"].iloc[i])
 
-        irx_yield = 0.0
-
+        irx_yield = 0.02  
         try:
             irx_value = irx_data.loc[date_i]
             if isinstance(irx_value, pd.DataFrame):
@@ -156,7 +182,7 @@ def run_backtest_simulation(stock_data_full, irx_data_full, start_date, end_date
             if not pd.isna(irx_close) and irx_close > 0:
                 irx_yield = float(irx_close) / 100
         except (KeyError, IndexError, ValueError):
-            irx_yield = 0.0
+            irx_yield = 0.02
 
         irx_daily_return = (1 + irx_yield) ** (1 / 252) - 1
 
@@ -175,10 +201,10 @@ def run_backtest_simulation(stock_data_full, irx_data_full, start_date, end_date
                 if not next_day_exists:
                     should_trade = True
         elif timing == "Biweekly":
-            if date_i.weekday() == 4:  # Friday
+            if date_i.weekday() == 4:  
                 week_num = date_i.isocalendar()[1]
                 should_trade = (week_num % 2 == 0)
-            elif date_i.weekday() == 3:  # Thursday
+            elif date_i.weekday() == 3:  
                 next_day_exists = i + 1 < len(dates) and dates[i + 1].weekday() == 4
                 week_num = date_i.isocalendar()[1]
                 if not next_day_exists:
@@ -219,7 +245,7 @@ def run_backtest_simulation(stock_data_full, irx_data_full, start_date, end_date
     final_portfolio = float(portfolio_values[-1]) if portfolio_values else initial_cash
     final_bh = float(bh_values[-1]) if bh_values else initial_cash
 
-    sma_metrics = calculate_performance_metrics(dates, portfolio_values, irx_data, avg_irx)
+    sma_metrics = calculate_performance_metrics(dates, portfolio_values, irx_data)
 
     return {
         'sma_months': sma_months,
@@ -242,17 +268,17 @@ with tab1:
         ticker = st.text_input("Stock Ticker", "VTI", key="hist_ticker").upper()
         col1, col2 = st.columns(2)
         with col1:
-            start_date = st.date_input("Start Date", date(2015, 12, 31), key="hist_start", min_value=date(1999, 12, 31), max_value=date.today())
+            start_date = st.date_input("Start Date", date(2015, 12, 31), key="hist_start", min_value=date(1899, 12, 31), max_value=date.today())
         with col2:
-            end_date = st.date_input("End Date", date.today(), key="hist_end", min_value=date(1999, 12, 31), max_value=date.today()) + relativedelta(days=1)
+            end_date = st.date_input("End Date", date.today(), key="hist_end", min_value=date(1899, 12, 31), max_value=date.today()) + relativedelta(days=1)
         sma_months = st.number_input("Analysis Period (months)", min_value=1, max_value=240, value=11, step=1, key="hist_months")
         timing = st.selectbox("Rebalance Frequency", ["At Signal", "Weekly", "Biweekly", "Monthly", "Bimonthly", "Quarterly"], key="hist_timing")
         initial_investment = st.number_input("Initial Capital ($)", min_value=1000, max_value=1000000, value=10000, step=1000, key="hist_investment")
 
         st.markdown("---")
 
-    sma_lookback = relativedelta(months=sma_months)
-    fetch_start_date = start_date - sma_lookback
+    extra_lookback = relativedelta(months=sma_months + 12)  
+    fetch_start_date = start_date - extra_lookback
 
     with st.spinner("Fetching historical data..."):
         stock_data_full = yf.download(ticker, start=fetch_start_date, end=end_date)
@@ -265,47 +291,41 @@ with tab1:
         stock_data_full.index = pd.to_datetime(stock_data_full.index)
         irx_data_full.index = pd.to_datetime(irx_data_full.index)
 
-        # Use the same SMA calculation as Current Analysis
-        sma_days = sma_months * 21
-        stock_data_full[f"SMA {sma_days}"] = stock_data_full["Close"].rolling(
-            window=sma_days, min_periods=1
-        ).mean()
+        stock_data_full[f"SMA {sma_months}M"] = calculate_exact_month_sma(
+            stock_data_full["Close"], sma_months
+        )
 
         stock_data = stock_data_full.loc[stock_data_full.index >= pd.to_datetime(start_date)].copy()
         irx_data = irx_data_full.reindex(stock_data.index, method="ffill")
 
-        if stock_data[f"SMA {sma_days}"].isna().any():
-            first_valid_sma = stock_data[f"SMA {sma_days}"].first_valid_index()
+        if stock_data[f"SMA {sma_months}M"].isna().any():
+            first_valid_sma = stock_data[f"SMA {sma_months}M"].first_valid_index()
             if first_valid_sma is not None:
-                first_valid_value = stock_data.loc[first_valid_sma, f"SMA {sma_days}"]
-                stock_data[f"SMA {sma_days}"].fillna(first_valid_value, inplace=True)
+                first_valid_value = stock_data.loc[first_valid_sma, f"SMA {sma_months}M"]
+                stock_data[f"SMA {sma_months}M"].fillna(first_valid_value, inplace=True)
             else:
-                stock_data[f"SMA {sma_days}"] = stock_data["Close"]
+                stock_data[f"SMA {sma_months}M"] = stock_data["Close"]
 
         initial_cash = initial_investment
         cash = initial_cash
         primary_shares = 0
         portfolio_values = []
         bh_values = []
-        
-        # Track all trades
+
         trades = []
         trade_id = 0
-        position = 0  # 0 = out of market, 1 = in market
+        position = 0  
         last_action = "INITIAL"
 
         dates = stock_data.index
         buy_and_hold_shares = initial_cash / stock_data["Close"].iloc[0]
 
-        avg_irx = float(irx_data["Close"].mean() / 100) if not irx_data.empty else 0.0
-
         for i in range(len(stock_data)):
             date_i = dates[i]
             price = float(stock_data["Close"].iloc[i])
-            sma = float(stock_data[f"SMA {sma_days}"].iloc[i])
+            sma = float(stock_data[f"SMA {sma_months}M"].iloc[i])
 
-            irx_yield = 0.0
-
+            irx_yield = 0.02  
             try:
                 irx_value = irx_data.loc[date_i]
                 if isinstance(irx_value, pd.DataFrame):
@@ -321,7 +341,7 @@ with tab1:
                 if not pd.isna(irx_close) and irx_close > 0:
                     irx_yield = float(irx_close) / 100
             except (KeyError, IndexError, ValueError):
-                irx_yield = 0.0
+                irx_yield = 0.02
 
             irx_daily_return = (1 + irx_yield) ** (1 / 252) - 1
 
@@ -340,10 +360,10 @@ with tab1:
                     if not next_day_exists:
                         should_trade = True
             elif timing == "Biweekly":
-                if date_i.weekday() == 4:  # Friday
+                if date_i.weekday() == 4:  
                     week_num = date_i.isocalendar()[1]
                     should_trade = (week_num % 2 == 0)
-                elif date_i.weekday() == 3:  # Thursday
+                elif date_i.weekday() == 3:  
                     next_day_exists = i + 1 < len(dates) and dates[i + 1].weekday() == 4
                     week_num = date_i.isocalendar()[1]
                     if not next_day_exists:
@@ -375,7 +395,7 @@ with tab1:
 
             if should_trade:
                 if price >= sma and cash > 0 and position == 0:
-                    # BUY signal
+
                     trade_shares = cash / price
                     trade_amount = cash
                     primary_shares = trade_shares
@@ -384,9 +404,9 @@ with tab1:
                     trade_action = "BUY"
                     trade_executed = True
                     last_action = "BUY"
-                    
+
                 elif price < sma and primary_shares > 0 and position == 1:
-                    # SELL signal
+
                     trade_shares = primary_shares
                     trade_amount = primary_shares * price
                     cash = trade_amount
@@ -401,8 +421,7 @@ with tab1:
 
             bh_value = float(buy_and_hold_shares * price)
             bh_values.append(float(bh_value))
-            
-            # Record trade if executed
+
             if trade_executed:
                 trade_id += 1
                 trades.append({
@@ -413,7 +432,7 @@ with tab1:
                     'shares': trade_shares,
                     'amount': trade_amount,
                     'portfolio_value': portfolio_value,
-                    'signal': f"Price {'≥' if trade_action == 'BUY' else '<'} SMA ({sma_days} days)",
+                    'signal': f"Price {'≥' if trade_action == 'BUY' else '<'} SMA ({sma_months}M)",
                     'cash_after': cash,
                     'shares_after': primary_shares
                 })
@@ -421,8 +440,8 @@ with tab1:
         final_portfolio = float(portfolio_values[-1]) if portfolio_values else initial_cash
         final_bh = float(bh_values[-1]) if bh_values else initial_cash
 
-        sma_metrics = calculate_performance_metrics(dates, portfolio_values, irx_data, avg_irx)
-        bh_metrics = calculate_performance_metrics(dates, bh_values, irx_data, avg_irx)
+        sma_metrics = calculate_performance_metrics(dates, portfolio_values, irx_data)
+        bh_metrics = calculate_performance_metrics(dates, bh_values, irx_data)
 
         sma_return = (final_portfolio - initial_cash) / initial_cash * 100
         bh_return = (final_bh - initial_cash) / initial_cash * 100
@@ -458,7 +477,7 @@ with tab1:
                 value=f"${total_return:,.0f}",
                 delta=None
             )
-            
+
         metrics = {
             "Metric": ["CAGR", "Sharpe Ratio", "Sortino Ratio"],
             "SMA": [
@@ -481,17 +500,15 @@ with tab1:
         df_metrics["SMA"] = df_metrics.apply(
             lambda row: f"{row['SMA']*100:.2f}%" if row["Metric"]=="CAGR" else f"{row['SMA']:.2f}", axis=1
         )
-        
+
         df_metrics.set_index("Metric", inplace=True)
 
         st.dataframe(df_metrics, use_container_width=True)
 
-        # Trade History Section
         with st.expander("Trade History", expanded=False):
             if trades:
                 trades_df = pd.DataFrame(trades)
-                
-                # Format the trades dataframe
+
                 trades_display = trades_df.copy()
                 trades_display['date'] = trades_display['date'].dt.strftime('%Y-%m-%d')
                 trades_display['price'] = trades_display['price'].apply(lambda x: f"${x:.2f}")
@@ -500,8 +517,7 @@ with tab1:
                 trades_display['cash_after'] = trades_display['cash_after'].apply(lambda x: f"${x:,.2f}")
                 trades_display['shares'] = trades_display['shares'].apply(lambda x: f"{x:,.2f}")
                 trades_display['shares_after'] = trades_display['shares_after'].apply(lambda x: f"{x:,.2f}")
-                
-                # Display summary statistics
+
                 col1, col2, col3, col4 = st.columns(4)
                 with col1:
                     total_trades = len(trades)
@@ -515,8 +531,7 @@ with tab1:
                 with col4:
                     avg_trade_amount = np.mean([t['amount'] for t in trades])
                     st.metric("Avg Trade Amount", f"${avg_trade_amount:,.0f}")
-                
-                # Display trades table
+
                 st.dataframe(
                     trades_display[[
                         'trade_id', 'date', 'action', 'price', 'shares', 'amount', 
@@ -524,18 +539,17 @@ with tab1:
                     ]],
                     use_container_width=True
                 )
-                
-                # Additional trade analysis
+
                 st.subheader("Trade Analysis")
                 if len(trades) >= 2:
                     trade_returns = []
-                    for i in range(1, len(trades), 2):  # Calculate returns for completed buy-sell cycles
+                    for i in range(1, len(trades), 2):  
                         if i < len(trades) and trades[i-1]['action'] == 'BUY' and trades[i]['action'] == 'SELL':
                             buy_price = trades[i-1]['price']
                             sell_price = trades[i]['price']
                             trade_return = (sell_price - buy_price) / buy_price * 100
                             trade_returns.append(trade_return)
-                    
+
                     if trade_returns:
                         col1, col2 = st.columns(2)
                         with col1:
@@ -571,11 +585,10 @@ with tab1:
         fig.add_trace(go.Scatter(x=monthly_dates, y=monthly_portfolio_values, name="SMA", line=dict(width=1.5, color='#4169C0')))
         fig.add_trace(go.Scatter(x=monthly_dates, y=monthly_bh_values, name="Buy & Hold", line=dict(width=1.5, color='#FFEE8C')))
 
-        # Add trade markers to the chart
         if trades:
             buy_trades = [t for t in trades if t['action'] == 'BUY']
             sell_trades = [t for t in trades if t['action'] == 'SELL']
-            
+
             if buy_trades:
                 fig.add_trace(go.Scatter(
                     x=[t['date'] for t in buy_trades],
@@ -584,7 +597,7 @@ with tab1:
                     name='Buy Trade',
                     marker=dict(color='#2ecc71', size=16, symbol='triangle-up', line=dict(width=0.5, color='DarkSlateGrey'))
                 ))
-            
+
             if sell_trades:
                 fig.add_trace(go.Scatter(
                     x=[t['date'] for t in sell_trades],
@@ -724,7 +737,7 @@ with tab1:
             st.metric("Max Buy & Hold Drawdown", f"{max_bh_dd:.1f}%")
 
         fig_drawdown = go.Figure()
-        
+
         fig_drawdown.add_trace(go.Scatter(
             x=monthly_drawdown_dates, 
             y=[dd * 100 for dd in monthly_bh_drawdowns],
@@ -758,20 +771,17 @@ with tab2:
 
     st.header("Current Market Analysis")
 
-    # Use the same end_date from the sidebar
     end_date_tab2 = st.session_state.get("hist_end", date.today()) + relativedelta(days=1)
-    
+
     @st.cache_data(show_spinner=True)
     def fetch_stock(ticker_symbol: str, start_date, end_date):
         return yf.download(ticker_symbol.upper(), start=start_date, end=end_date)
 
-    # Use the same SMA months from the sidebar
     sma_months_tab2 = st.session_state.get("hist_months", 11)
-    
-    # Calculate lookback period for SMA calculation (same as historical backtest)
-    sma_lookback_tab2 = relativedelta(months=sma_months_tab2)
-    start_date_current = end_date_tab2 - sma_lookback_tab2
-    
+
+    extra_lookback_tab2 = relativedelta(months=sma_months_tab2 + 12)  
+    start_date_current = end_date_tab2 - extra_lookback_tab2
+
     try:
         stock_data = fetch_stock(ticker, start_date_current, end_date_tab2)
     except Exception as e:
@@ -785,22 +795,19 @@ with tab2:
         price_series = stock_data[price_column].squeeze()
 
         last_price = float(price_series.iloc[-1])
-        avg_price = float(price_series.mean())
 
-        # Use the same SMA calculation as historical backtest
-        sma_days = sma_months_tab2 * 21
         df = pd.DataFrame({price_column: price_series})
-        df[f"SMA {sma_days}"] = df[price_column].rolling(window=sma_days, min_periods=1).mean()
-        df["Signal"] = (df[price_column] >= df[f"SMA {sma_days}"]).astype(int)
+        sma, look = calculate_exact_month_sma(df[price_column], sma_months_tab2, True) 
 
-        latest_signal = "BUY" if df["Signal"].iloc[-1] == 1 else "SELL"
+        signal = last_price >= sma.iloc[-1]
+        latest_signal = "BUY" if signal else "SELL"
         signal_color = "normal" if latest_signal == "BUY" else "inverse"
 
         col1, col2, col3 = st.columns(3)
         with col1:
             st.metric("Current Price", f"${last_price:,.2f}")
         with col2:
-            st.metric(f"SMA {sma_days} Days", f"${df[f'SMA {sma_days}'].iloc[-1]:,.2f}")
+            st.metric(f"SMA {sma_months_tab2} Months", f"${sma.iloc[-1]:,.2f}")
         with col3:
             st.metric("Trading Signal", latest_signal, delta=None, delta_color=signal_color)
 
@@ -816,14 +823,11 @@ with tab2:
 
         fig.add_trace(go.Scatter(
             x=df.index,
-            y=df[f"SMA {sma_days}"],
+            y=sma,
             mode='lines',
-            name=f'SMA {sma_days}',
+            name=f'SMA {sma_months_tab2}M',
             line=dict(width=2, dash='dash', color='#ff7f0e')
         ))
-
-        buy_signals = df[df["Signal"].diff() == 1]
-        sell_signals = df[df["Signal"].diff() == -1]
 
         fig.update_layout(
             template="plotly_dark",
@@ -851,17 +855,17 @@ with tab2:
 
         with st.expander("View Historical Data"):
             st.dataframe(
-                df[[price_column, f"SMA {sma_days}", "Signal"]].tail(sma_days),
+                look,
                 use_container_width=True
             )
 
 with tab3:
     st.header("Parameter Simulation Results")
-    
+
     simulate_button = st.button("Run Parameter Simulation", use_container_width=True)
 
     if simulate_button:
-        # Use the same data from tab1
+
         if 'stock_data_full' in locals() and 'irx_data_full' in locals():
             sma_months_range = [7, 8, 9, 10, 11, 12, 15, 18]
             rebalance_freqs = ["Monthly", "Bimonthly", "Quarterly"]
@@ -917,7 +921,7 @@ with tab3:
             best_by_cagr = results_df.loc[results_df['cagr'].idxmax()]
             best_by_sharpe = results_df.loc[results_df['sharpe'].idxmax()]
             best_by_sortino = results_df.loc[results_df['sortino'].idxmax()]
-            
+
             col1, col2, col3 = st.columns(3)
 
             with col1:
@@ -926,14 +930,14 @@ with tab3:
                         f"SMA {int(best_by_cagr['sma_months'])}M\n{best_by_cagr['timing']}",
                         f"{best_by_cagr['cagr']*100:.1f}%"
                     )
-                
+
             with col2:
                 st.metric(
                         "Best Sharpe Ratio",
                         f"SMA {int(best_by_sharpe['sma_months'])}M\n{best_by_sharpe['timing']}",
                         f"{best_by_sharpe['sharpe']:.2f}"
                     )
-                
+
             with col3:
                 st.metric(
                         "Best Sortino Ratio",
