@@ -186,7 +186,7 @@ def run_backtest_simulation(stock_data_full, irx_data_full, start_date, end_date
 
         irx_daily_return = (1 + irx_yield) ** (1 / 252) - 1
 
-        if cash > 0:
+        if cash > 0 and primary_shares == 0:
             cash *= (1 + irx_daily_return)
 
         should_trade = False
@@ -513,9 +513,7 @@ with tab1:
                 trades_display['date'] = trades_display['date'].dt.strftime('%Y-%m-%d')
                 trades_display['price'] = trades_display['price'].apply(lambda x: f"${x:.2f}")
                 trades_display['amount'] = trades_display['amount'].apply(lambda x: f"${x:,.2f}")
-                trades_display['portfolio_value'] = trades_display['portfolio_value'].apply(lambda x: f"${x:,.2f}")
                 trades_display['cash_after'] = trades_display['cash_after'].apply(lambda x: f"${x:,.2f}")
-                trades_display['shares'] = trades_display['shares'].apply(lambda x: f"{x:,.2f}")
                 trades_display['shares_after'] = trades_display['shares_after'].apply(lambda x: f"{x:,.2f}")
 
                 col1, col2, col3, col4 = st.columns(4)
@@ -534,8 +532,7 @@ with tab1:
 
                 st.dataframe(
                     trades_display[[
-                        'trade_id', 'date', 'action', 'price', 'shares', 'amount', 
-                        'signal', 'portfolio_value'
+                        'trade_id', 'date', 'action', 'price', 'shares', 'amount'
                     ]],
                     use_container_width=True
                 )
