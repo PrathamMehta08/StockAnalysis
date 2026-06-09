@@ -84,7 +84,23 @@ def worker_backtest(state: WorkerState):
 
 def supervisor_analyze(state: SupervisorState):
     """Supervisor node: Collects results and queries Gemini for comparative portfolio analysis."""
-    vertexai.init(project="sma-agent-v2", location="us-central1")
+    import streamlit as st
+    
+    creds = None
+    try:
+        if "gcp_service_account" in st.secrets:
+            from google.oauth2 import service_account
+            # Convert AttrDict to standard dict
+            creds_info = dict(st.secrets["gcp_service_account"])
+            creds = service_account.Credentials.from_service_account_info(creds_info)
+    except Exception:
+        pass
+        
+    if creds:
+        vertexai.init(project="sma-agent-v2", location="us-central1", credentials=creds)
+    else:
+        vertexai.init(project="sma-agent-v2", location="us-central1")
+        
     model = GenerativeModel("gemini-2.5-flash")
     
     results_summary = ""
